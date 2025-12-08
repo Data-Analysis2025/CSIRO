@@ -3,13 +3,10 @@ Upload trained models and source code to Kaggle Datasets.
 
 Usage:
     # First upload (create new dataset)
-    python upload_kaggle_dataset.py --dataset-id htmp-baseline-models --dirs models src
+    python upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml
 
     # Update existing dataset
-    python upload_kaggle_dataset.py --dataset-id htmp-baseline-models --dirs models src --update --message "Updated models with new features"
-
-    # Include configs directory
-    python upload_kaggle_dataset.py --dataset-id htmp-baseline-models --dirs models src configs
+    python upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml --update --message "Updated biomass model"
 """
 
 import argparse
@@ -94,7 +91,7 @@ def main():
         metadata["title"] = args.dataset_id.replace("-", " ").title()
         metadata["id"] = f"{args.username}/{args.dataset_id}"
         metadata["licenses"] = [{"name": "CC0-1.0"}]
-        metadata["keywords"] = ["finance", "machine-learning", "time-series", "hull-tactical"]
+        metadata["keywords"] = ["biomass", "remote-sensing", "machine-learning", "regression"]
 
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)

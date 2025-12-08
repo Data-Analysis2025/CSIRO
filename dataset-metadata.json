@@ -1,15 +1,15 @@
 {
-  "title": "HTMP Baseline Models",
-  "id": "rikuter67/htmp-baseline-models",
+  "title": "CSIRO Biomass Models",
+  "id": "YOUR_USERNAME/csiro-biomass-models",
   "licenses": [
     {
       "name": "CC0-1.0"
     }
   ],
   "keywords": [
-    "finance",
-    "machine-learning",
-    "time-series"
+    "biomass",
+    "remote-sensing",
+    "machine-learning"
   ],
   "collaborators": [],
   "data": []
