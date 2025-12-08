@@ -1,0 +1,57 @@
+# 実験名
+run_name: ridge
+
+# ランダムシード
+seed: 42
+
+# パス設定
+paths:
+  input_dir: data
+  processed_dir: data/processed
+  models_dir: models
+  submissions_dir: submissions
+  logs_dir: logs
+
+files:
+  train: train.csv
+  test: test.csv
+
+# 目的変数
+target:
+  column: market_forward_excess_returns
+
+# 交差検証
+cv:
+  strategy: time_series
+  n_splits: 5
+  time_column: date_id
+
+# 特徴量エンジニアリング
+features:
+  drop_columns:
+    - date_id
+    - forward_returns
+    - risk_free_rate
+    - market_forward_excess_returns
+    - lagged_forward_returns
+    - lagged_risk_free_rate
+    - lagged_market_forward_excess_returns
+    - is_scored
+  imputation_strategy: rolling_ensemble
+  imputation_rolling_windows: [5, 20, 60, 240]
+  imputation_rolling_weights: [0.4, 0.3, 0.2, 0.1]
+  scale: true
+  rolling_windows: [5, 20, 60, 240]
+  rolling_stats: ["mean", "std", "zscore"]
+
+# Optunaによる探索設定（軽め）
+optuna:
+  n_trials: 10
+  direction: minimize
+
+# モデル設定（Ridge）
+model:
+  type: ridge
+  fit_intercept: true
+  params:
+    alpha: { type: "loguniform", low: 0.1, high: 20.0 }

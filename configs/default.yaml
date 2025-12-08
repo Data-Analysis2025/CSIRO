@@ -1,0 +1,70 @@
+# 実験名
+run_name: default
+
+# ランダムシード
+seed: 42
+
+# パス設定
+paths:
+  input_dir: data
+  processed_dir: data/processed
+  models_dir: models
+  submissions_dir: submissions
+  logs_dir: logs
+
+files:
+  train: train.csv
+  test: test.csv   # 必要なら追加
+  
+# 目的変数
+target:
+  column: market_forward_excess_returns
+
+# 交差検証
+cv:
+  strategy: time_series  # 時系列分割
+  n_splits: 5
+  time_column: date_id
+
+# 特徴量エンジニアリング
+features:
+  drop_columns:
+    - date_id
+    - forward_returns
+    - risk_free_rate
+    - market_forward_excess_returns
+    - lagged_forward_returns
+    - lagged_risk_free_rate
+    - lagged_market_forward_excess_returns
+    - is_scored
+  imputation_strategy: rolling_ensemble
+  imputation_rolling_windows: [5, 20, 60, 240] # 週・月・四半期・年
+  imputation_rolling_weights: [0.4, 0.3, 0.2, 0.1]
+  scale: true
+  rolling_windows: [5, 20, 60, 240]
+  rolling_stats: ["mean", "std", "zscore"] # ロール特徴は平均・ボラ・偏差
+
+# Optunaによる探索設定
+optuna:
+  n_trials: 50 # 試行回数
+  direction: minimize # RMSEを最小化
+
+# モデル (Optuna)
+model:
+  type: lightgbm
+  fit_intercept: false
+  params:
+    objective: "regression_l1"
+    metric: "rmse"
+    verbosity: -1
+    boosting_type: "gbdt"
+    # 探索対象のパラメータ
+    learning_rate: { type: "loguniform", low: 0.01, high: 0.1 }
+    num_leaves: { type: "int", low: 20, high: 256 }
+    max_depth: { type: "int", low: 3, high: 15 }
+    feature_fraction: { type: "uniform", low: 0.6, high: 1.0 }
+    bagging_fraction: { type: "uniform", low: 0.6, high: 1.0 }
+    bagging_freq: { type: "int", low: 1, high: 10 }
+    min_data_in_leaf: { type: "int", low: 10, high: 100 }
+    lambda_l1: { type: "loguniform", low: 1e-8, high: 10.0 }
+    lambda_l2: { type: "loguniform", low: 1e-8, high: 10.0 }

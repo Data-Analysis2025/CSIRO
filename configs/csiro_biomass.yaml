@@ -1,0 +1,62 @@
+# 実験名
+run_name: csiro_biomass
+
+# ランダムシード
+seed: 42
+
+# パス設定
+paths:
+  input_dir: data/csiro_biomass
+  processed_dir: data/csiro_biomass/processed
+  models_dir: models
+  submissions_dir: submissions
+  logs_dir: logs
+
+files:
+  train: train.csv   # ダウンロード後のファイル名に合わせて変更
+  test: test.csv    # 公開テストがある場合のみ（無ければ未使用）
+
+# 目的変数（必ず手元のtrain.csvの列名に合わせて変更する）
+target:
+  column: TARGET_COLUMN_NAME
+
+# 交差検証
+cv:
+  strategy: time_series
+  n_splits: 5
+  time_column: date_id   # 時系列列があればここを変更。無ければkfoldに切り替え可。
+
+# 特徴量エンジニアリング
+features:
+  drop_columns: []  # target列やID列をここに追加
+  imputation_strategy: rolling_ensemble
+  imputation_rolling_windows: [5, 20, 60, 240]
+  imputation_rolling_weights: [0.4, 0.3, 0.2, 0.1]
+  scale: true
+  rolling_windows: [5, 20, 60, 240]
+  rolling_stats: ["mean", "std", "zscore"]
+
+# Optuna（デフォルトOFFにしてあります）
+optuna:
+  n_trials: 0
+  direction: minimize
+
+# モデル
+model:
+  type: lightgbm
+  fit_intercept: false
+  params:
+    objective: "regression_l1"
+    metric: "rmse"
+    verbosity: -1
+    boosting_type: "gbdt"
+    # 探索せずに使うデフォルト値（必要なら調整）
+    learning_rate: 0.05
+    num_leaves: 64
+    max_depth: -1
+    feature_fraction: 0.9
+    bagging_fraction: 0.9
+    bagging_freq: 5
+    min_data_in_leaf: 50
+    lambda_l1: 0.1
+    lambda_l2: 0.1

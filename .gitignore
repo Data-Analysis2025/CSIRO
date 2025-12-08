@@ -1,0 +1,24 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environments
+.env
+.venv
+
+# Data & outputs
+/data/raw/*
+/data/processed/*
+/models/*
+/logs/*
+/submissions/*.csv
+/notebooks/*.ipynb
+!data/processed/.gitkeep
+!logs/.gitkeep
+!models/.gitkeep
+
+# Misc
+.DS_Store
