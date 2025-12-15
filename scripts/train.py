@@ -1,4 +1,4 @@
-"""Train a baseline model for the Hull Tactical Market Prediction competition."""
+"""Train a htmp-style baseline model (used for CSIRO Biomass)."""
 from __future__ import annotations
 
 import argparse
@@ -103,8 +103,11 @@ def main() -> None:
     feature_config = FeatureConfig(
         drop_columns=feature_cfg.get("drop_columns", []),
         imputation_strategy=feature_cfg.get("imputation_strategy", "median"),
+        imputation_rolling_windows=feature_cfg.get("imputation_rolling_windows"),
+        imputation_rolling_weights=feature_cfg.get("imputation_rolling_weights"),
         scale=feature_cfg.get("scale", True),
         rolling_windows=feature_cfg.get("rolling_windows"),
+        rolling_stats=feature_cfg.get("rolling_stats"),
         enable_interactions=feature_cfg.get("enable_interactions", False),
         time_column=cv_cfg.get("time_column"),
         group_column=cv_cfg.get("group_column"),

@@ -15,6 +15,7 @@ paths:
 files:
   train: train.csv   # ダウンロード後のファイル名に合わせて変更
   test: test.csv    # 公開テストがある場合のみ（無ければ未使用）
+  sample_submission: sample_submission.csv
 
 # 目的変数（必ず手元のtrain.csvの列名に合わせて変更する）
 target:
@@ -60,3 +61,8 @@ model:
     min_data_in_leaf: 50
     lambda_l1: 0.1
     lambda_l2: 0.1
+
+# 推論
+inference:
+  average_folds: true
+  output_filename: csiro_biomass_submission.csv

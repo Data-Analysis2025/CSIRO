@@ -11,9 +11,8 @@ CSIRO/
 ├── logs/                    # 学習ログ
 ├── models/                  # 保存される学習済みモデル
 ├── notebooks/               # 提出用 Notebook サンプル
-├── scripts/                 # train/predict/列確認などのスクリプト
+├── scripts/                 # train/predict/列確認・Kaggleデータセット作成などのスクリプト
 ├── src/                     # 前処理・特徴量・モデル実装
-├── upload_kaggle_dataset.py # Kaggle データセットアップロード用
 └── requirements.txt
 ```
 
@@ -27,11 +26,16 @@ pip install -r requirements.txt  # またはお好みの仮想環境で
 ## データのダウンロード（Kaggle CLI）
 
 ```bash
-# ~/.kaggle/kaggle.json を配置済みであること
+# 事前準備: Kaggle APIキーを配置
+# cp ~/Downloads/kaggle.json ~/.kaggle/kaggle.json
+# chmod 600 ~/.kaggle/kaggle.json
+
 mkdir -p data/csiro_biomass
 cd data/csiro_biomass
 kaggle competitions download -c csiro-biomass
 unzip csiro-biomass.zip
+# 不要なら zip を削除
+rm csiro-biomass.zip
 ```
 
 期待する配置例:
@@ -62,6 +66,8 @@ cv:
 
 features:
   drop_columns: []                # target や ID 列を追加
+files:
+  sample_submission: sample_submission.csv # 実際のファイル名に合わせる
 ```
 
 - 時系列でない場合は `cv.strategy: kfold` に変更し、`time_column` は削除/コメントアウト。
@@ -79,7 +85,7 @@ python scripts/train.py --config configs/csiro_biomass.yaml --seed 42 --skip-opt
 ## モデルとコードを Kaggle データセットにアップロード
 
 ```bash
-python upload_kaggle_dataset.py \
+python scripts/upload_kaggle_dataset.py \
   --dataset-id csiro-biomass-models \
   --dirs models src configs/csiro_biomass.yaml \
   --update \
@@ -102,6 +108,6 @@ python upload_kaggle_dataset.py \
 
 - 列確認: `python scripts/inspect_columns.py --train data/csiro_biomass/train.csv`
 - 学習: `python scripts/train.py --config configs/csiro_biomass.yaml --seed 42 --skip-optuna`
-- Kaggle データセット更新: `python upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml --update --message "update"`
+- Kaggle データセット更新: `python scripts/upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml --update --message "update"`
 
 Happy Kaggling!

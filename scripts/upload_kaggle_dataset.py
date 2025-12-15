@@ -3,10 +3,10 @@ Upload trained models and source code to Kaggle Datasets.
 
 Usage:
     # First upload (create new dataset)
-    python upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml
+    python scripts/upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml
 
     # Update existing dataset
-    python upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml --update --message "Updated biomass model"
+    python scripts/upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml --update --message "Updated biomass model"
 """
 
 import argparse

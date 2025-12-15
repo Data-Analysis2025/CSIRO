@@ -1,4 +1,4 @@
-"""Feature engineering for the Hull Tactical Market Prediction baseline."""
+"""Feature engineering utilities shared across htmp-style baselines."""
 from __future__ import annotations
 
 from dataclasses import dataclass

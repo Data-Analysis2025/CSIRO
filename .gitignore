@@ -1,24 +1,33 @@
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
-
-# Jupyter
-.ipynb_checkpoints/
+*.so
 
 # Environments
 .env
 .venv
+.mypy_cache/
+.pytest_cache/
 
-# Data & outputs
-/data/raw/*
-/data/processed/*
-/models/*
-/logs/*
-/submissions/*.csv
-/notebooks/*.ipynb
-!data/processed/.gitkeep
-!logs/.gitkeep
-!models/.gitkeep
+# Jupyter
+.ipynb_checkpoints/
 
-# Misc
+# Editors/OS
 .DS_Store
+.idea/
+.vscode/
+
+# Data & artifacts (kept local)
+data/**
+models/**
+logs/**
+submissions/**
+!data/.gitkeep
+!models/.gitkeep
+!logs/.gitkeep
+!submissions/.gitkeep
+
+# Kaggle/temp
+*.zip
+*.tar.gz
+*.tmp

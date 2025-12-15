@@ -3,20 +3,15 @@ set -euo pipefail
 
 # 複数の設定とシードで一括実行するラッパー
 # 例: ./scripts/run_experiments.sh
+# デフォルトは csiro_biomass.yaml のみ。増やす場合は CONFIGS/SEED_MAP を編集。
 
 CONFIGS=(
-  "configs/default.yaml"        # Optuna 50 trials (重め)
-  "configs/lightgbm_fast.yaml"  # Optuna 20 trials
-  "configs/ridge.yaml"          # Ridge (軽量)
-  "configs/trader_long.yaml"    # 長期窓を含むトレーダー視点
+  "configs/csiro_biomass.yaml"
 )
 
 # 設定ごとのシード指定
 declare -A SEED_MAP=(
-  ["configs/default.yaml"]="42"
-  ["configs/lightgbm_fast.yaml"]="42 1337"
-  ["configs/ridge.yaml"]="42 1337"
-   ["configs/trader_long.yaml"]="42"
+  ["configs/csiro_biomass.yaml"]="42"
 )
 
 PYTHON_BIN=${PYTHON_BIN:-python}

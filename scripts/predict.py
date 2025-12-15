@@ -36,20 +36,31 @@ def main() -> None:
     config.ensure_dirs()
 
     paths = config.get("paths")
-    files = config.get("files")
-    target_cfg = config.get("target")
-    cv_cfg = config.get("cv")
-    feature_cfg = config.get("features")
-    inference_cfg = config.get("inference")
+    files = config.get("files") or {}
+    target_cfg = config.get("target") or {}
+    cv_cfg = config.get("cv") or {}
+    feature_cfg = config.get("features") or {}
+    inference_cfg = config.get("inference", default={}) or {}
 
-    test_df = pd.read_csv(Path(paths["input_dir"]) / files["test"])
-    sample_submission = pd.read_csv(Path(paths["input_dir"]) / files["sample_submission"])
+    test_file = files.get("test")
+    if not test_file:
+        raise KeyError("Config `files.test` is required for prediction.")
+    sample_file = files.get("sample_submission", "sample_submission.csv")
+    target_column = target_cfg.get("column")
+    if not target_column:
+        raise KeyError("Config `target.column` is required for prediction.")
+
+    test_df = pd.read_csv(Path(paths["input_dir"]) / test_file)
+    sample_submission = pd.read_csv(Path(paths["input_dir"]) / sample_file)
 
     feature_config = FeatureConfig(
         drop_columns=feature_cfg.get("drop_columns", []),
         imputation_strategy=feature_cfg.get("imputation_strategy", "median"),
+        imputation_rolling_windows=feature_cfg.get("imputation_rolling_windows"),
+        imputation_rolling_weights=feature_cfg.get("imputation_rolling_weights"),
         scale=feature_cfg.get("scale", True),
         rolling_windows=feature_cfg.get("rolling_windows"),
+        rolling_stats=feature_cfg.get("rolling_stats"),
         enable_interactions=feature_cfg.get("enable_interactions", False),
         time_column=cv_cfg.get("time_column"),
         group_column=cv_cfg.get("group_column"),
@@ -68,7 +79,7 @@ def main() -> None:
         feature_columns = artifact["feature_columns"]
 
         extractor.scaler = scaler
-        transformed = extractor.transform(test_df, target_column=target_cfg.get("column"))
+        transformed = extractor.transform(test_df, target_column=target_column)
         # Align feature columns if the test set lost any columns during processing.
         missing_cols = [col for col in feature_columns if col not in transformed.columns]
         for col in missing_cols:
@@ -84,7 +95,8 @@ def main() -> None:
         predictions = fold_predictions[-1]
 
     submission = sample_submission.copy()
-    submission[target_cfg.get("prediction_column", target_cfg.get("column"))] = predictions
+    prediction_column = target_cfg.get("prediction_column", target_column)
+    submission[prediction_column] = predictions
 
     output_filename = inference_cfg.get("output_filename", f"{config.get('run_name')}_submission.csv")
     submission_path = Path(paths["submissions_dir"]) / output_filename
