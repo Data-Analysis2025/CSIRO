@@ -1,113 +1,109 @@
-# CSIRO Biomass ベースライン
+# CSIRO Image2Biomass（ローカル学習 + Kaggle提出）
 
-CSIRO Biomass コンペ向けに、htmp-baseline と同じ構造（configs / scripts / src）でローカル学習 → Kaggle データセット公開 → Notebook から推論・提出までをまとめたテンプレートです。
+このリポジトリは、**ローカルで画像モデルを学習**し、重みを **Kaggle Dataset にアップロード**して、**Kaggle Notebook で submission.csv を生成・提出**するための最小構成テンプレートです。
 
-## プロジェクト構成
+---
 
-```
-CSIRO/
-├── configs/                 # 実験設定（csiro_biomass.yaml を編集）
-├── data/                    # Kaggle から取得したデータを配置（data/csiro_biomass/）
-├── logs/                    # 学習ログ
-├── models/                  # 保存される学習済みモデル
-├── notebooks/               # 提出用 Notebook サンプル
-├── scripts/                 # train/predict/列確認・Kaggleデータセット作成などのスクリプト
-├── src/                     # 前処理・特徴量・モデル実装
-└── requirements.txt
-```
-
-## セットアップ
+## 1. セットアップ
 
 ```bash
-cd /home/yamazono/DAS25/CSIRO
-pip install -r requirements.txt  # またはお好みの仮想環境で
+pip install -r requirements.txt
 ```
 
-## データのダウンロード（Kaggle CLI）
+---
+
+## 2. データの取得
 
 ```bash
-# 事前準備: Kaggle APIキーを配置
-# cp ~/Downloads/kaggle.json ~/.kaggle/kaggle.json
-# chmod 600 ~/.kaggle/kaggle.json
-
-mkdir -p data/csiro_biomass
+kaggle competitions download -c csiro-biomass -p data/csiro_biomass
 cd data/csiro_biomass
-kaggle competitions download -c csiro-biomass
 unzip csiro-biomass.zip
-# 不要なら zip を削除
-rm csiro-biomass.zip
 ```
 
-期待する配置例:
+データ構成：
+
 ```
 data/csiro_biomass/
-  ├── train.csv
-  ├── test.csv           # 公開テストがある場合
-  └── sample_submission.csv
+├── train.csv
+├── test.csv
+├── sample_submission.csv
+├── train/        # 画像
+└── test/         # 公開テスト画像
 ```
 
-## 列確認スクリプト（ターゲット列・drop_columns を決める）
+---
+
+## 3. ローカル学習（自作ResNet）
+
+以下は `custom_resnet34` を **ゼロから学習**する例です。
 
 ```bash
-python scripts/inspect_columns.py --train data/csiro_biomass/train.csv
+python scripts/train_image.py \
+  --data-dir data/csiro_biomass \
+  --out-dir models \
+  --model-name custom_resnet34 \
+  --image-size 128 \
+  --epochs 10 \
+  --batch-size 8
 ```
 
-## コンフィグ編集のガイド（configs/csiro_biomass.yaml）
+学習後に `models/image_custom_resnet34.pt` が生成されます。
 
-`configs/csiro_biomass.yaml` を開いて、まず以下を実データに合わせて更新してください。
+---
 
-```yaml
-target:
-  column: TARGET_COLUMN_NAME      # 目的変数
-
-cv:
-  strategy: time_series           # 時系列でなければ kfold に変更
-  time_column: date_id            # 時系列列名（無ければ削除）
-
-features:
-  drop_columns: []                # target や ID 列を追加
-files:
-  sample_submission: sample_submission.csv # 実際のファイル名に合わせる
-```
-
-- 時系列でない場合は `cv.strategy: kfold` に変更し、`time_column` は削除/コメントアウト。
-- `drop_columns` にはターゲット列・ID列・不要列を入れる。
-- Optuna はデフォルト無効 (`optuna.n_trials: 0`)。探索する場合は値を増やし、学習時に `--skip-optuna` を外します。
-
-## 学習コマンド（ローカル）
+## 4. ローカル推論（任意）
 
 ```bash
-python scripts/train.py --config configs/csiro_biomass.yaml --seed 42 --skip-optuna
+python scripts/predict_image.py \
+  --data-dir data/csiro_biomass \
+  --model-path models/image_custom_resnet34.pt \
+  --output submissions/submission.csv
 ```
 
-成果物は `models/` と `logs/` に保存されます。Optuna も使う場合は `--skip-optuna` を付けずに実行してください。
+---
 
-## モデルとコードを Kaggle データセットにアップロード
+## 5. Kaggle用にモデルとコードをアップロード
 
 ```bash
 python scripts/upload_kaggle_dataset.py \
-  --dataset-id csiro-biomass-models \
-  --dirs models src configs/csiro_biomass.yaml \
+  --dataset-id YOUR_USERNAME/csiro-biomass-models \
+  --dirs models src \
   --update \
-  --message "CSIRO biomass model update"
+  --message "custom_resnet34 weights"
 ```
 
-- 初回は `--update` を外してください。
-- `--dataset-id` は自分の名前空間に合わせて変更可能。
-- kaggle CLI が一時ディレクトリを作るので、実行後に URL が出力されます。
+※ `YOUR_USERNAME` は自分の Kaggle ユーザー名に変更してください。
 
-## Notebook で推論して Submit する手順
+---
 
-1. Kaggle の `csiro-biomass` ページで **Code → New Notebook** を開く。
-2. 右側の **Input** パネルで **+ Add Data** → 上で作ったデータセット（例: `YOUR_USERNAME/csiro-biomass-models`）を追加。
-3. このリポジトリの `kaggle_submission_fixed.ipynb` をアップロードするか、中身をコピー。必要に応じてモデル読み込みパスを合わせる。
-4. **Run All** で実行し、出力を確認。
-5. 問題なければ **Submit to Competition** を押して提出。
+## 6. Kaggle Notebookで提出
 
-## よく使うコマンドのまとめ
+1. Kaggleで新規 Notebook を作成  
+2. Input に以下を追加  
+   - `csiro-biomass`（コンペデータ）  
+   - `YOUR_USERNAME/csiro-biomass-models`（アップロードした models + src）
+3. `notebooks/kaggle_image_inference.ipynb` をアップロード  
+4. **Run All → Output から `submission.csv` を提出**
 
-- 列確認: `python scripts/inspect_columns.py --train data/csiro_biomass/train.csv`
-- 学習: `python scripts/train.py --config configs/csiro_biomass.yaml --seed 42 --skip-optuna`
-- Kaggle データセット更新: `python scripts/upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml --update --message "update"`
+Notebookは以下に出力します：
 
-Happy Kaggling!
+```
+/kaggle/working/submission.csv
+```
+
+---
+
+## ファイル説明
+
+- `scripts/train_image.py`：ローカル学習
+- `scripts/predict_image.py`：ローカル推論
+- `src/models_image.py`：自作ResNet定義
+- `notebooks/kaggle_image_inference.ipynb`：Kaggle推論用Notebook
+
+---
+
+## 備考
+
+- 出力は **5つのターゲットを同時回帰**します  
+  `Dry_Green_g`, `Dry_Dead_g`, `Dry_Clover_g`, `GDM_g`, `Dry_Total_g`
+- `custom_resnet18` も使用可能です
