@@ -110,4 +110,23 @@ python scripts/upload_kaggle_dataset.py \
 - 学習: `python scripts/train.py --config configs/csiro_biomass.yaml --seed 42 --skip-optuna`
 - Kaggle データセット更新: `python scripts/upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml --update --message "update"`
 
+## 学習〜予測を一括で実行するスクリプト
+
+毎回同じ流れで学習と予測を行う場合は、以下のスクリプトで一括実行できます。
+
+```bash
+# デフォルト設定（configs/csiro_biomass.yaml, SEED=42, Optunaスキップ）
+bash scripts/run_pipeline.sh
+
+# コンフィグ変更・シード変更・Optuna有効化の例
+SEED=123 SKIP_OPTUNA=0 bash scripts/run_pipeline.sh configs/csiro_biomass.yaml
+
+# 設定とデータ配置だけ検証（学習・予測はスキップ）
+DRY_RUN=1 bash scripts/run_pipeline.sh
+```
+
+- データ配置は `data/csiro_biomass/` 配下に `train.csv` / `test.csv` / `sample_submission.csv` を置く従来の手順と同じです。
+- `SKIP_OPTUNA=0` とすると Optuna 探索を有効化し、指定を省略すると `--skip-optuna` で高速に学習します。
+- `DRY_RUN=1` にするとコンフィグ・データの存在チェックだけ行い、学習や予測を実行しないため、事前のセットアップ確認に使えます。
+
 Happy Kaggling!
