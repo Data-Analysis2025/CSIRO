@@ -16,6 +16,7 @@ CSIRO/
 └── requirements.txt
 ```
 
+```text
 Raw image
    │
    ├─ Split width-wise ─────────────┐
@@ -52,6 +53,7 @@ Raw image
                                       (src/model.py:468-488)
                          + aux head on stage2 tokens if enabled
                                       (src/model.py:553-566)
+```
 
 
 ## セットアップ
