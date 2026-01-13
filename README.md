@@ -16,6 +16,44 @@ CSIRO/
 └── requirements.txt
 ```
 
+Raw image
+   │
+   ├─ Split width-wise ─────────────┐
+   │                                │
+┌──▼───────────────┐          ┌─────▼──────────────┐
+│ Left branch      │          │ Right branch       │
+│ TileEncoder      │          │ TileEncoder        │  (src/model.py:470-506)
+│   ↳ small/big grids         ↳ small/big grids
+│ T2T Retokenizer             T2T Retokenizer
+│ CrossScale Fusion           CrossScale Fusion
+│ Pyramid Mixer               Pyramid Mixer
+└──▼───────────────┘          └─────▼──────────────┘
+     feat_l + maps                feat_r + maps
+          │                           │
+          ├────────────┬──────────────┤
+          │            │
+          │    Cross-gating (σ(W_r * feat_l), σ(W_l * feat_r))
+          │            │                    (src/model.py:528-534)
+          └──────► Multiply & Concatenate ◄──────┘
+                         │
+                Combined feature (dim = 2*CFG.pyramid_dims[-1])
+                         │
+      ┌──────────────────┴─────────────────────┐
+      │                 │                       │
+   head_green       head_clover             head_dead
+      │                 │                       │
+   green_pos        clover_pos              dead_pos
+      │                 │                       │
+      └──► gdm = green + clover ──┬──► total = gdm + dead
+                                  │
+                        score_head (LayerNorm+Linear)
+                                  │
+                         Outputs: total, gdm, green
+                                      (src/model.py:468-488)
+                         + aux head on stage2 tokens if enabled
+                                      (src/model.py:553-566)
+
+
 ## セットアップ
 
 ```bash

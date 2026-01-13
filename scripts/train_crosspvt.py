@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -18,15 +19,18 @@ from typing import Dict, List, Tuple
 
 import albumentations as A
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data as data
 import torch.utils.data as data_utils
 from albumentations.pytorch import ToTensorV2
 from sklearn.model_selection import KFold
 from torch.cuda.amp import GradScaler, autocast
+from tqdm.auto import tqdm
 
 # Ensure project root is on sys.path so that `src` can be imported.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +38,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.model import CFG, CrossPVT_T2T_MambaDINO, update_cfg_from_checkpoint  # noqa: E402
+
+DEFAULT_TARGET_WEIGHTS = (0.1, 0.1, 0.1, 0.2, 0.5)
 
 
 def seed_everything(seed: int):
@@ -46,6 +52,7 @@ def seed_everything(seed: int):
 
 
 def build_transforms(img_size: int) -> A.Compose:
+    img_size = 384 if img_size < 384 else img_size
     return A.Compose(
         [
             A.Resize(img_size, img_size, interpolation=cv2.INTER_AREA),
@@ -111,10 +118,88 @@ def save_checkpoint(state: Dict, base_dir: Path, fold: int, tag: str = "best"):
     return ckpt_path
 
 
-def train_one_epoch(model, loader, optimizer, scaler, device, criterion):
+def _rmse_from_sse(sse: float, count: int) -> float:
+    if count == 0:
+        return 0.0
+    return float(math.sqrt(max(0.0, sse) / count))
+
+
+def _weighted_r2(
+    sse_res: float,
+    weighted_sum_y: float,
+    weighted_sum_y2: float,
+    total_weight: float,
+) -> float:
+    if total_weight <= 0:
+        return 0.0
+    y_bar = weighted_sum_y / total_weight
+    sstot = weighted_sum_y2 - total_weight * (y_bar ** 2)
+    if sstot <= 1e-12:
+        return 0.0
+    return float(1.0 - (sse_res / sstot))
+
+
+def save_metric_plot(
+    train_losses: List[float],
+    val_losses: List[float],
+    train_rmses: List[float],
+    val_rmses: List[float],
+    train_r2: List[float],
+    val_r2: List[float],
+    out_path: Path,
+):
+    epochs = np.arange(1, len(train_losses) + 1)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
+    axes[0].plot(epochs, train_losses, label="train")
+    axes[0].plot(epochs, val_losses, label="valid")
+    axes[0].set_title("Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("SmoothL1Loss")
+    axes[0].legend()
+
+    axes[1].plot(epochs, train_rmses, label="train")
+    axes[1].plot(epochs, val_rmses, label="valid")
+    axes[1].set_title("RMSE")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("RMSE")
+    axes[1].legend()
+
+    axes[2].plot(epochs, train_r2, label="train")
+    axes[2].plot(epochs, val_r2, label="valid")
+    axes[2].set_title("Weighted R²")
+    axes[2].set_xlabel("Epoch")
+    axes[2].set_ylabel("R²")
+    axes[2].legend()
+
+    fig.suptitle("Training Progress")
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    scaler,
+    device,
+    criterion,
+    target_weights: torch.Tensor,
+    desc: str = "train",
+):
     model.train()
     total_loss = 0.0
-    for left, right, target in loader:
+    seen = 0
+    sq_err = 0.0
+    elem_count = 0
+    weights = target_weights.view(1, -1).to(device)
+    weights_sum = float(target_weights.sum().item())
+    weighted_y_sum = 0.0
+    weighted_y2_sum = 0.0
+    weighted_sse = 0.0
+    total_weight = 0.0
+    progress = tqdm(loader, desc=desc, leave=False)
+    for left, right, target in progress:
         left = left.to(device)
         right = right.to(device)
         target = target.to(device)
@@ -133,14 +218,39 @@ def train_one_epoch(model, loader, optimizer, scaler, device, criterion):
         scaler.step(optimizer)
         scaler.update()
         total_loss += loss.item() * left.size(0)
-    return total_loss / len(loader.dataset)
+        mse_batch = F.mse_loss(pred, target, reduction="sum")
+        sq_err += mse_batch.item()
+        elem_count += target.numel()
+        seen += left.size(0)
+        diff = (pred - target) ** 2
+        weighted_sse += (diff * weights).sum().item()
+        weighted_y_sum += (target * weights).sum().item()
+        weighted_y2_sum += (target.pow(2) * weights).sum().item()
+        total_weight += weights_sum * left.size(0)
+        avg_loss = total_loss / max(1, seen)
+        progress.set_postfix(
+            loss=f"{avg_loss:.4f}",
+            rmse=f"{_rmse_from_sse(sq_err, elem_count):.4f}",
+        )
+    r2 = _weighted_r2(weighted_sse, weighted_y_sum, weighted_y2_sum, total_weight)
+    return total_loss / len(loader.dataset), _rmse_from_sse(sq_err, elem_count), r2
 
 
-def validate(model, loader, device, criterion):
+def validate(model, loader, device, criterion, target_weights: torch.Tensor, desc: str = "valid"):
     model.eval()
     total_loss = 0.0
+    sq_err = 0.0
+    elem_count = 0
+    seen = 0
+    weights = target_weights.view(1, -1).to(device)
+    weights_sum = float(target_weights.sum().item())
+    weighted_y_sum = 0.0
+    weighted_y2_sum = 0.0
+    weighted_sse = 0.0
+    total_weight = 0.0
+    progress = tqdm(loader, desc=desc, leave=False)
     with torch.no_grad():
-        for left, right, target in loader:
+        for left, right, target in progress:
             left = left.to(device)
             right = right.to(device)
             target = target.to(device)
@@ -153,7 +263,22 @@ def validate(model, loader, device, criterion):
             pred = torch.cat([green, dead, clover, gdm, total_pred], dim=1)
             loss = criterion(pred, target)
             total_loss += loss.item() * left.size(0)
-    return total_loss / len(loader.dataset)
+            mse_batch = F.mse_loss(pred, target, reduction="sum")
+            sq_err += mse_batch.item()
+            elem_count += target.numel()
+            seen += left.size(0)
+            diff = (pred - target) ** 2
+            weighted_sse += (diff * weights).sum().item()
+            weighted_y_sum += (target * weights).sum().item()
+            weighted_y2_sum += (target.pow(2) * weights).sum().item()
+            total_weight += weights_sum * left.size(0)
+            avg_loss = total_loss / max(1, seen)
+            progress.set_postfix(
+                loss=f"{avg_loss:.4f}",
+                rmse=f"{_rmse_from_sse(sq_err, elem_count):.4f}",
+            )
+    r2 = _weighted_r2(weighted_sse, weighted_y_sum, weighted_y2_sum, total_weight)
+    return total_loss / len(loader.dataset), _rmse_from_sse(sq_err, elem_count), r2
 
 
 def main():
@@ -175,11 +300,42 @@ def main():
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=None)
     parser.add_argument("--hidden-ratio", type=float, default=None)
+    parser.add_argument(
+        "--target-weights",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated weights matching CFG.ALL_TARGET_COLS order "
+            "(defaults to 0.1,0.1,0.1,0.2,0.5)."
+        ),
+    )
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=0,
+        help="Stop training if validation loss fails to improve for this many epochs (0 disables).",
+    )
+    parser.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=0.0,
+        help="Minimum decrease in validation loss to qualify as an improvement.",
+    )
     args = parser.parse_args()
 
     seed_everything(args.seed)
 
     paths, targets = load_and_pivot(args.train_csv)
+    if args.target_weights:
+        weight_values = [float(x.strip()) for x in args.target_weights.split(",") if x.strip()]
+    else:
+        weight_values = list(DEFAULT_TARGET_WEIGHTS)
+    if len(weight_values) != len(CFG.ALL_TARGET_COLS):
+        raise ValueError(
+            f"Expected {len(CFG.ALL_TARGET_COLS)} target weights, got {len(weight_values)}. "
+            "Match CFG.ALL_TARGET_COLS order."
+        )
+    target_weights = torch.tensor(weight_values, dtype=torch.float32)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -235,10 +391,43 @@ def main():
         criterion = nn.SmoothL1Loss()
 
         best_loss = float("inf")
+        epochs_no_improve = 0
+        train_losses: List[float] = []
+        val_losses: List[float] = []
+        train_rmses: List[float] = []
+        val_rmses: List[float] = []
+        train_r2_scores: List[float] = []
+        val_r2_scores: List[float] = []
         for epoch in range(1, args.epochs + 1):
-            train_loss = train_one_epoch(model, train_loader, optimizer, scaler, device, criterion)
-            val_loss = validate(model, val_loader, device, criterion)
-            print(f"Epoch {epoch}: train_loss={train_loss:.4f} val_loss={val_loss:.4f}")
+            train_loss, train_rmse, train_r2 = train_one_epoch(
+                model,
+                train_loader,
+                optimizer,
+                scaler,
+                device,
+                criterion,
+                target_weights,
+                desc=f"Fold {fold} Train (Epoch {epoch}/{args.epochs})",
+            )
+            val_loss, val_rmse, val_r2 = validate(
+                model,
+                val_loader,
+                device,
+                criterion,
+                target_weights,
+                desc=f"Fold {fold} Valid (Epoch {epoch}/{args.epochs})",
+            )
+            print(
+                f"Epoch {epoch}/{args.epochs}: "
+                f"train_loss={train_loss:.4f} train_rmse={train_rmse:.4f} train_r2={train_r2:.4f} | "
+                f"val_loss={val_loss:.4f} val_rmse={val_rmse:.4f} val_r2={val_r2:.4f}"
+            )
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            train_rmses.append(train_rmse)
+            val_rmses.append(val_rmse)
+            train_r2_scores.append(train_r2)
+            val_r2_scores.append(val_r2)
 
             state = {
                 "model_state": model.state_dict(),
@@ -248,10 +437,31 @@ def main():
                 "val_loss": val_loss,
             }
             ckpt_path = save_checkpoint(state, run_dir, fold, tag="last")
-            if val_loss < best_loss:
+            if val_loss < best_loss - args.early_stop_min_delta:
                 best_loss = val_loss
                 ckpt_path = save_checkpoint(state, run_dir, fold, tag="best")
                 print(f"  Saved new best: {ckpt_path} (val_loss={val_loss:.4f})")
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+                if args.early_stop_patience > 0 and epochs_no_improve >= args.early_stop_patience:
+                    print(
+                        f"  Early stopping triggered at epoch {epoch} "
+                        f"(no val_loss improvement for {args.early_stop_patience} epochs)."
+                    )
+                    break
+
+        metrics_path = run_dir / f"fold_{fold}" / "metrics.png"
+        save_metric_plot(
+            train_losses,
+            val_losses,
+            train_rmses,
+            val_rmses,
+            train_r2_scores,
+            val_r2_scores,
+            metrics_path,
+        )
+        print(f"  Saved metric plot: {metrics_path}")
 
         # free memory per fold
         del model
