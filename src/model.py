@@ -9,7 +9,7 @@ import numpy as np
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, Dict, Tuple
 
 try:
@@ -72,9 +72,12 @@ DINO_LOGGER.setLevel(logging.INFO)
 class TrainCFG:
     dropout: float = 0.1
     hidden_ratio: float = 0.35
+    # dino_candidates: Tuple[str, ...] = (
+    #     "vit_base_patch14_dinov2",
+    #     "vit_base_patch14_reg4_dinov2",
+    #     "vit_small_patch14_dinov2",
+    # )    
     dino_candidates: Tuple[str, ...] = (
-        "vit_base_patch14_dinov2",
-        "vit_base_patch14_reg4_dinov2",
         "vit_small_patch14_dinov2",
     )
     small_grid: Tuple[int, int] = (4, 4)
@@ -500,6 +503,27 @@ if torch is not None and nn is not None and F is not None and timm is not None:
             self.cross_gate_left = nn.Linear(CFG.pyramid_dims[-1], CFG.pyramid_dims[-1])
             self.cross_gate_right = nn.Linear(CFG.pyramid_dims[-1], CFG.pyramid_dims[-1])
 
+        def summary(self) -> str:
+            def count_params(m):
+                total = sum(p.numel() for p in m.parameters())
+                trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)
+                return total, trainable
+
+            total_params, trainable_params = count_params(self)
+            summary_lines = [
+                f"Model: {self.__class__.__name__}",
+                f"Backbone: {self.backbone_name}",
+                f"Input resolution: {self.input_res}",
+                f"Total parameters: {total_params:,}",
+                f"Trainable parameters: {trainable_params:,}",
+                "",
+                "TrainCFG:",
+            ]
+            cfg_dict = asdict(CFG)
+            for key in sorted(cfg_dict.keys()):
+                summary_lines.append(f"  {key}: {cfg_dict[key]}")
+            return "\n".join(summary_lines)
+
         def _build_dino_backbone(self):
             last_err = None
             for name in CFG.dino_candidates:
@@ -628,6 +652,8 @@ if torch is not None and nn is not None and F is not None and timm is not None:
                 "green": green,
                 "score_feat": f_concat,
             }
+            pred = torch.cat([green, total - gdm, gdm - green, gdm, total], dim=1)
+            out["pred"] = pred
             if self.aux_head is not None:
                 aux_tokens = torch.cat([feats_l["stage2_tokens"], feats_r["stage2_tokens"]], dim=1)
                 aux_pred = self.softplus(self.aux_head(aux_tokens.mean(dim=1)))
@@ -639,6 +665,55 @@ if torch is not None and nn is not None and F is not None and timm is not None:
                     "stage3_left": feats_l.get("stage3_tokens"),
                     "stage3_right": feats_r.get("stage3_tokens"),
                 }
+            return out
+
+    class SimpleViTRegressor(nn.Module):
+        """Single ViT backbone regressor for simplified experiments."""
+
+        def __init__(self, backbone: str = "vit_small_patch14_dinov2", img_size: int = 384, dropout: float = 0.1):
+            super().__init__()
+            self.backbone_name = backbone
+            self.input_res = img_size
+            self.backbone = timm.create_model(backbone, pretrained=True, num_classes=0)
+            self.head = nn.Sequential(
+                nn.LayerNorm(self.backbone.num_features),
+                nn.Dropout(dropout),
+                nn.Linear(self.backbone.num_features, len(CFG.ALL_TARGET_COLS)),
+            )
+
+        def summary(self) -> str:
+            total_params = sum(p.numel() for p in self.parameters())
+            trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            lines = [
+                f"Model: {self.__class__.__name__}",
+                f"Backbone: {self.backbone_name}",
+                f"Input resolution: {self.input_res}",
+                f"Total parameters: {total_params:,}",
+                f"Trainable parameters: {trainable_params:,}",
+                "",
+                "TrainCFG:",
+            ]
+            cfg_dict = asdict(CFG)
+            for key in sorted(cfg_dict.keys()):
+                lines.append(f"  {key}: {cfg_dict[key]}")
+            return "\n".join(lines)
+
+        def forward(self, *inputs, x=None, x_left=None, x_right=None, **kwargs):
+            if x is None:
+                if x_left is None:
+                    raise ValueError("SimpleViTRegressor expects x or x_left input.")
+                if x_right is not None:
+                    x = torch.cat([x_left, x_right], dim=3)
+                else:
+                    x = x_left
+            feat = self.backbone(x)
+            pred = self.head(feat)
+            out = {
+                "pred": pred,
+                "green": pred[:, 0:1],
+                "gdm": pred[:, 3:4],
+                "total": pred[:, 4:5],
+            }
             return out
 
 else:
@@ -653,6 +728,15 @@ else:
                 missing.append("timm")
             missing_str = ", ".join(missing) if missing else "torch and timm"
             raise ImportError(f"CrossPVT_T2T_MambaDINO requires {missing_str} to be installed.")
+    class SimpleViTRegressor:
+        def __init__(self, *args, **kwargs):
+            missing = []
+            if torch is None:
+                missing.append("torch")
+            if timm is None:
+                missing.append("timm")
+            missing_str = ", ".join(missing) if missing else "torch and timm"
+            raise ImportError(f"SimpleViTRegressor requires {missing_str} to be installed.")
 
 
 __all__ = [
@@ -664,4 +748,5 @@ __all__ = [
     "rmse",
     "update_cfg_from_checkpoint",
     "CrossPVT_T2T_MambaDINO",
+    "SimpleViTRegressor",
 ]
