@@ -22,7 +22,6 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data as data
@@ -37,9 +36,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.model import CFG, CrossPVT_T2T_MambaDINO, update_cfg_from_checkpoint  # noqa: E402
+from src.model import CFG, CrossPVT_T2T_MambaDINO, SimpleViTRegressor, update_cfg_from_checkpoint  # noqa: E402
 
 DEFAULT_TARGET_WEIGHTS = (0.1, 0.1, 0.1, 0.2, 0.5)
+SUMMARY_FILENAME = "model_summary.txt"
 
 
 def seed_everything(seed: int):
@@ -52,7 +52,6 @@ def seed_everything(seed: int):
 
 
 def build_transforms(img_size: int) -> A.Compose:
-    img_size = 384 if img_size < 384 else img_size
     return A.Compose(
         [
             A.Resize(img_size, img_size, interpolation=cv2.INTER_AREA),
@@ -67,21 +66,34 @@ def load_and_pivot(train_csv: Path) -> Tuple[List[str], np.ndarray]:
 
     df = pd.read_csv(train_csv)
     # Pivot to wide: one row per image_path
-    wide = df.pivot_table(index="image_path", columns="target_name", values="target")
+    wide = (
+        df.pivot_table(index="image_path", columns="target_name", values="target")
+        .reset_index()
+        .sort_values("image_path")
+        .reset_index(drop=True)
+    )
     # Ensure consistent column order
     cols = list(CFG.ALL_TARGET_COLS)
-    wide = wide[cols]
-    paths = wide.index.to_list()
-    targets = wide.to_numpy(dtype=np.float32)
+    wide = wide[["image_path", *cols]]
+    paths = wide["image_path"].to_list()
+    targets = wide[cols].to_numpy(dtype=np.float32)
     return paths, targets
 
 
 class BiomassDataset(data.Dataset):
-    def __init__(self, image_paths: List[str], targets: np.ndarray, image_dir: Path, transform: A.Compose):
+    def __init__(
+        self,
+        image_paths: List[str],
+        targets: np.ndarray,
+        image_dir: Path,
+        transform: A.Compose,
+        dual_input: bool = True,
+    ):
         self.image_paths = image_paths
         self.targets = targets
         self.image_dir = image_dir
         self.transform = transform
+        self.dual_input = dual_input
 
     def __len__(self):
         return len(self.image_paths)
@@ -100,13 +112,17 @@ class BiomassDataset(data.Dataset):
         if img is None:
             raise FileNotFoundError(f"Image not found: {full_path}")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        target = torch.from_numpy(self.targets[idx])
+        if not self.dual_input:
+            image_t = self.transform(image=img)["image"]
+            return image_t, target
+
         h, w, _ = img.shape
         mid = w // 2
         left = img[:, :mid]
         right = img[:, mid:]
         left_t = self.transform(image=left)["image"]
         right_t = self.transform(image=right)["image"]
-        target = torch.from_numpy(self.targets[idx])
         return left_t, right_t, target
 
 
@@ -177,14 +193,32 @@ def save_metric_plot(
     plt.close(fig)
 
 
+def _weighted_smooth_l1(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor, weight_sum: float):
+    loss = F.smooth_l1_loss(pred, target, reduction="none")
+    weighted = loss * weights
+    per_sample = weighted.sum(dim=1) / max(weight_sum, 1e-8)
+    return per_sample.mean()
+
+
+def assemble_predictions(out: Dict[str, torch.Tensor]) -> torch.Tensor:
+    if "pred" in out:
+        return out["pred"]
+    green = out["green"]
+    gdm = out["gdm"]
+    total = out["total"]
+    clover = gdm - green
+    dead = total - gdm
+    return torch.cat([green, dead, clover, gdm, total], dim=1)
+
+
 def train_one_epoch(
     model,
     loader,
     optimizer,
     scaler,
     device,
-    criterion,
     target_weights: torch.Tensor,
+    dual_input: bool,
     desc: str = "train",
 ):
     model.train()
@@ -199,21 +233,21 @@ def train_one_epoch(
     weighted_sse = 0.0
     total_weight = 0.0
     progress = tqdm(loader, desc=desc, leave=False)
-    for left, right, target in progress:
-        left = left.to(device)
-        right = right.to(device)
+    for batch in progress:
+        if dual_input:
+            left, right, target = batch
+            left = left.to(device)
+            right = right.to(device)
+        else:
+            left, target = batch
+            left = left.to(device)
+            right = None
         target = target.to(device)
         optimizer.zero_grad(set_to_none=True)
         with autocast(enabled=True):
             out = model(x_left=left, x_right=right)
-            # Pack predictions to 5 targets
-            green = out["green"]
-            gdm = out["gdm"]
-            total_pred = out["total"]
-            clover = gdm - green
-            dead = total_pred - gdm
-            pred = torch.cat([green, dead, clover, gdm, total_pred], dim=1)
-            loss = criterion(pred, target)
+            pred = assemble_predictions(out)
+            loss = _weighted_smooth_l1(pred, target, weights, weights_sum)
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -236,7 +270,7 @@ def train_one_epoch(
     return total_loss / len(loader.dataset), _rmse_from_sse(sq_err, elem_count), r2
 
 
-def validate(model, loader, device, criterion, target_weights: torch.Tensor, desc: str = "valid"):
+def validate(model, loader, device, target_weights: torch.Tensor, dual_input: bool, desc: str = "valid"):
     model.eval()
     total_loss = 0.0
     sq_err = 0.0
@@ -250,18 +284,19 @@ def validate(model, loader, device, criterion, target_weights: torch.Tensor, des
     total_weight = 0.0
     progress = tqdm(loader, desc=desc, leave=False)
     with torch.no_grad():
-        for left, right, target in progress:
-            left = left.to(device)
-            right = right.to(device)
+        for batch in progress:
+            if dual_input:
+                left, right, target = batch
+                left = left.to(device)
+                right = right.to(device)
+            else:
+                left, target = batch
+                left = left.to(device)
+                right = None
             target = target.to(device)
             out = model(x_left=left, x_right=right)
-            green = out["green"]
-            gdm = out["gdm"]
-            total_pred = out["total"]
-            clover = gdm - green
-            dead = total_pred - gdm
-            pred = torch.cat([green, dead, clover, gdm, total_pred], dim=1)
-            loss = criterion(pred, target)
+            pred = assemble_predictions(out)
+            loss = _weighted_smooth_l1(pred, target, weights, weights_sum)
             total_loss += loss.item() * left.size(0)
             mse_batch = F.mse_loss(pred, target, reduction="sum")
             sq_err += mse_batch.item()
@@ -282,7 +317,7 @@ def validate(model, loader, device, criterion, target_weights: torch.Tensor, des
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train CrossPVT_T2T_MambaDINO")
+    parser = argparse.ArgumentParser(description="Train CrossPVT or ViT baselines")
     parser.add_argument("--train-csv", type=Path, required=True)
     parser.add_argument("--image-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, default=Path("models"))
@@ -298,28 +333,54 @@ def main():
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=2)
-    parser.add_argument("--dropout", type=float, default=None)
-    parser.add_argument("--hidden-ratio", type=float, default=None)
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default="crosspvt",
+        choices=["crosspvt", "vit_simple"],
+        help="Model architecture to train.",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.1,
+        help="Override CrossPVT dropout or vit_simple head dropout.",
+    )
+    parser.add_argument(
+        "--hidden-ratio",
+        type=float,
+        default=0.3,
+        help="CrossPVT MLP hidden ratio (ignored for vit_simple).",
+    )
+    parser.add_argument(
+        "--img-size",
+        type=int,
+        default=None,
+        help="Override input resolution (defaults to model's preferred size).",
+    )
+    parser.add_argument(
+        "--vit-backbone",
+        type=str,
+        default="vit_small_patch14_dinov2",
+        help="Backbone name for vit_simple architecture.",
+    )
     parser.add_argument(
         "--target-weights",
         type=str,
-        default=None,
-        help=(
-            "Comma-separated weights matching CFG.ALL_TARGET_COLS order "
-            "(defaults to 0.1,0.1,0.1,0.2,0.5)."
-        ),
+        default="0.1,0.1,0.1,0.2,0.5",
+        help="Comma-separated weights matching CFG.ALL_TARGET_COLS order.",
     )
     parser.add_argument(
         "--early-stop-patience",
         type=int,
-        default=0,
+        default=5,
         help="Stop training if validation loss fails to improve for this many epochs (0 disables).",
     )
     parser.add_argument(
         "--early-stop-min-delta",
         type=float,
         default=0.0,
-        help="Minimum decrease in validation loss to qualify as an improvement.",
+        help="Minimum increase in validation R² to qualify as an improvement.",
     )
     args = parser.parse_args()
 
@@ -340,7 +401,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Set up run directory for organized checkpoints
-    run_name = args.run_name or f"crosspvt_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if args.run_name:
+        run_name = args.run_name
+    else:
+        img_tag = args.img_size if args.img_size is not None else "auto"
+        run_name = (
+            f"{args.arch}_img{img_tag}_bs{args.batch_size}_lr{args.lr}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
     run_dir = args.out_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving checkpoints under: {run_dir}")
@@ -348,12 +416,14 @@ def main():
     kf = KFold(n_splits=args.folds, shuffle=True, random_state=args.seed)
 
     # Update CFG if custom hyperparams provided
-    cfg_override = {}
-    if args.dropout is not None:
-        cfg_override["dropout"] = args.dropout
-    if args.hidden_ratio is not None:
-        cfg_override["hidden_ratio"] = args.hidden_ratio
-    update_cfg_from_checkpoint(cfg_override)
+    dual_input = args.arch == "crosspvt"
+    if dual_input:
+        cfg_override = {}
+        if args.dropout is not None:
+            cfg_override["dropout"] = args.dropout
+        if args.hidden_ratio is not None:
+            cfg_override["hidden_ratio"] = args.hidden_ratio
+        update_cfg_from_checkpoint(cfg_override)
 
     for fold, (train_idx, val_idx) in enumerate(kf.split(paths)):
         print(f"\n===== Fold {fold} / {args.folds} =====")
@@ -363,12 +433,21 @@ def main():
         val_tgts = targets[val_idx]
 
         # Build temporary model to get input resolution
-        temp_model = CrossPVT_T2T_MambaDINO(dropout=CFG.dropout, hidden_ratio=CFG.hidden_ratio)
-        img_size = getattr(temp_model, "input_res", 518)
+        if args.arch == "crosspvt":
+            temp_model = CrossPVT_T2T_MambaDINO(dropout=CFG.dropout, hidden_ratio=CFG.hidden_ratio)
+        else:
+            vit_dropout = args.dropout if args.dropout is not None else 0.1
+            default_img = args.img_size or 384
+            temp_model = SimpleViTRegressor(
+                backbone=args.vit_backbone,
+                img_size=default_img,
+                dropout=vit_dropout,
+            )
+        img_size = args.img_size or getattr(temp_model, "input_res", 518)
         transform = build_transforms(img_size)
 
-        train_ds = BiomassDataset(train_paths, train_tgts, args.image_dir, transform)
-        val_ds = BiomassDataset(val_paths, val_tgts, args.image_dir, transform)
+        train_ds = BiomassDataset(train_paths, train_tgts, args.image_dir, transform, dual_input=dual_input)
+        val_ds = BiomassDataset(val_paths, val_tgts, args.image_dir, transform, dual_input=dual_input)
 
         train_loader = data_utils.DataLoader(
             train_ds,
@@ -388,9 +467,16 @@ def main():
         model = temp_model.to(device)
         optimizer = optim.AdamW(model.parameters(), lr=args.lr)
         scaler = GradScaler(enabled=True)
-        criterion = nn.SmoothL1Loss()
-
-        best_loss = float("inf")
+        summary_dir = run_dir / f"fold_{fold}"
+        summary_path = summary_dir / SUMMARY_FILENAME
+        summary_text = temp_model.summary() if hasattr(temp_model, "summary") else str(temp_model)
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write(summary_text)
+        print("=== Model Summary ===")
+        print(summary_text)
+        print(f"(Saved to {summary_path})")
+        best_r2 = float("-inf")
         epochs_no_improve = 0
         train_losses: List[float] = []
         val_losses: List[float] = []
@@ -405,16 +491,16 @@ def main():
                 optimizer,
                 scaler,
                 device,
-                criterion,
                 target_weights,
+                dual_input,
                 desc=f"Fold {fold} Train (Epoch {epoch}/{args.epochs})",
             )
             val_loss, val_rmse, val_r2 = validate(
                 model,
                 val_loader,
                 device,
-                criterion,
                 target_weights,
+                dual_input,
                 desc=f"Fold {fold} Valid (Epoch {epoch}/{args.epochs})",
             )
             print(
@@ -435,19 +521,20 @@ def main():
                 "epoch": epoch,
                 "fold": fold,
                 "val_loss": val_loss,
+                "val_r2": val_r2,
             }
             ckpt_path = save_checkpoint(state, run_dir, fold, tag="last")
-            if val_loss < best_loss - args.early_stop_min_delta:
-                best_loss = val_loss
+            if val_r2 > best_r2 + args.early_stop_min_delta:
+                best_r2 = val_r2
                 ckpt_path = save_checkpoint(state, run_dir, fold, tag="best")
-                print(f"  Saved new best: {ckpt_path} (val_loss={val_loss:.4f})")
+                print(f"  Saved new best: {ckpt_path} (val_r2={val_r2:.4f})")
                 epochs_no_improve = 0
             else:
                 epochs_no_improve += 1
                 if args.early_stop_patience > 0 and epochs_no_improve >= args.early_stop_patience:
                     print(
                         f"  Early stopping triggered at epoch {epoch} "
-                        f"(no val_loss improvement for {args.early_stop_patience} epochs)."
+                        f"(no val_r2 improvement for {args.early_stop_patience} epochs)."
                     )
                     break
 
@@ -468,8 +555,13 @@ def main():
         torch.cuda.empty_cache()
 
     # Save meta info
+    def _serialize_arg(value):
+        if isinstance(value, Path):
+            return str(value)
+        return value
+
     meta = {
-        "args": vars(args),
+        "args": {k: _serialize_arg(v) for k, v in vars(args).items()},
         "cfg": asdict(CFG),
         "run_dir": str(run_dir),
     }

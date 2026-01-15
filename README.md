@@ -126,10 +126,9 @@ python scripts/train.py --config configs/csiro_biomass.yaml --seed 42 --skip-opt
 
 ```bash
 python scripts/upload_kaggle_dataset.py \
-  --dataset-id csiro-biomass-models \
-  --dirs models src configs/csiro_biomass.yaml \
-  --update \
-  --message "CSIRO biomass model update"
+  --dataset-id ViTOnly \
+  --dirs models/crosspvt_imgauto_bs8_lr0.0001_20260113_130321/ src scripts configs \
+  --message "CSIRO biomass models + inference script update"
 ```
 
 - 初回は `--update` を外してください。
@@ -148,7 +147,7 @@ python scripts/upload_kaggle_dataset.py \
 
 - 列確認: `python scripts/inspect_columns.py --train data/csiro_biomass/train.csv`
 - 学習: `python scripts/train.py --config configs/csiro_biomass.yaml --seed 42 --skip-optuna`
-- Kaggle データセット更新: `python scripts/upload_kaggle_dataset.py --dataset-id csiro-biomass-models --dirs models src configs/csiro_biomass.yaml --update --message "update"`
+- Kaggle データセット更新: `python scripts/upload_kaggle_dataset.py --dataset-id ViTOnly --dirs models/crosspvt_imgauto_bs8_lr0.0001_20260113_130321/ src scripts configs --message "CSIRO biomass models + inference script update"`
 
 ## 学習〜予測を一括で実行するスクリプト
 
