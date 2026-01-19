@@ -1,0 +1,54 @@
+run_name: xgb_embedding
+seed: 42
+
+paths:
+  input_dir: data/csiro_biomass
+  processed_dir: data/csiro_biomass/processed
+  models_dir: models
+  submissions_dir: submissions
+  logs_dir: logs
+
+files:
+  train: train.csv
+  test: test.csv
+  train_embeddings: train_embeddings_combined.csv
+  test_embeddings: test_embeddings_combined.csv
+  sample_submission: sample_submission.csv
+
+target:
+  columns: ["Dry_Green_g", "Dry_Dead_g", "Dry_Clover_g", "GDM_g", "Dry_Total_g"]
+  max_values:
+    Dry_Clover_g: 71.7865
+    Dry_Dead_g: 83.8407
+    Dry_Green_g: 157.9836
+    Dry_Total_g: 185.70
+    GDM_g: 157.9836
+
+cv:
+  strategy: kfold
+  n_splits: 5
+  shuffle: true
+
+features:
+  engine: SupervisedEmbeddingEngine
+  params:
+    n_pca: 0.98
+    n_pls: 8
+    n_gmm: 5
+
+model:
+  type: xgboost
+  params:
+    n_estimators: 1000
+    learning_rate: 0.05
+    max_depth: 6
+    subsample: 0.8
+    colsample_bytree: 0.8
+    objective: "reg:squarederror"
+    n_jobs: -1
+    random_state: 42
+    tree_method: "hist"
+
+inference:
+  post_process: true
+  output_filename: submission_xgb.csv

@@ -1,0 +1,53 @@
+run_name: cat_embedding
+seed: 42
+
+paths:
+  input_dir: data/csiro_biomass
+  processed_dir: data/csiro_biomass/processed
+  models_dir: models
+  submissions_dir: submissions
+  logs_dir: logs
+
+files:
+  train: train.csv
+  test: test.csv
+  train_embeddings: train_embeddings_combined.csv # 変更
+  test_embeddings: test_embeddings_combined.csv   # 変更
+  sample_submission: sample_submission.csv
+
+target:
+  columns: ["Dry_Green_g", "Dry_Dead_g", "Dry_Clover_g", "GDM_g", "Dry_Total_g"]
+  max_values:
+    Dry_Clover_g: 71.7865
+    Dry_Dead_g: 83.8407
+    Dry_Green_g: 157.9836
+    Dry_Total_g: 185.70
+    GDM_g: 157.9836
+
+cv:
+  strategy: kfold
+  n_splits: 5
+  shuffle: true
+
+features:
+  engine: SupervisedEmbeddingEngine
+  params:
+    n_pca: 0.98
+    n_pls: 8
+    n_gmm: 5
+
+model:
+  type: catboost
+  params:
+    iterations: 2000
+    learning_rate: 0.05
+    depth: 6
+    loss_function: RMSE
+    random_seed: 42
+    verbose: 0
+    allow_writing_files: false
+    task_type: CPU
+
+inference:
+  post_process: true
+  output_filename: submission_cat.csv
