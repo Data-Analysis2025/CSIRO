@@ -6,8 +6,8 @@ seed: 42
 
 # パス設定
 paths:
-  input_dir: data/csiro_biomass
-  processed_dir: data/csiro_biomass/processed
+  input_dir: data
+  processed_dir: data/processed
   models_dir: models
   submissions_dir: submissions
   logs_dir: logs

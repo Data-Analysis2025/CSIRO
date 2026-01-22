@@ -1,9 +1,11 @@
 import pandas as pd
 from pathlib import Path
 
-# パスはあなたの設定に合わせて調整してください
-train_path = "data/csiro_biomass/train_embeddings_combined.csv"
-test_path = "data/csiro_biomass/test_embeddings_combined.csv"
+from path_utils import resolve_data_dir
+
+DATA_DIR = resolve_data_dir("data/csiro_biomass", required_files=[])
+train_path = DATA_DIR / "train_embeddings_combined.csv"
+test_path = DATA_DIR / "test_embeddings_combined.csv"
 
 def check_file(path):
     print(f"--- Checking {path} ---")

@@ -1,3 +1,4 @@
+import argparse
 import sys
 import joblib
 import pandas as pd
@@ -9,9 +10,15 @@ from sklearn.preprocessing import StandardScaler
 from lightgbm import LGBMRegressor
 from xgboost import XGBRegressor
 from catboost import CatBoostRegressor
+from tqdm.auto import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PROJECT_ROOT / "data" / "csiro_biomass"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from path_utils import resolve_data_dir
+
+DATA_DIR = resolve_data_dir(PROJECT_ROOT / "data" / "csiro_biomass")
 MODELS_DIR = PROJECT_ROOT / "models" / "large_ensemble"
 
 TARGET_NAMES = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -23,6 +30,13 @@ MAX_VALS = np.array([71.7865, 83.8407, 157.9836, 185.70, 157.9836])
 WEIGHTS = {
     'Dry_Green_g': 0.1, 'Dry_Dead_g': 0.1, 'Dry_Clover_g': 0.1, 'GDM_g': 0.2, 'Dry_Total_g': 0.5,
 }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train LGBM/XGB/CatBoost on embedding features.")
+    parser.add_argument("--train-embeddings", type=str, default=None, help="Path to train embeddings CSV.")
+    parser.add_argument("--models-dir", type=str, default=None, help="Directory to save trained models.")
+    return parser.parse_args()
 
 def competition_metric(y_true, y_pred):
     y_weighted = 0
@@ -55,10 +69,14 @@ def post_process_biomass(y_pred_df):
     return df_out
 
 def main():
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    args = parse_args()
+    models_dir = Path(args.models_dir) if args.models_dir else MODELS_DIR
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    train_emb_path = Path(args.train_embeddings) if args.train_embeddings else DATA_DIR / "train_embeddings_large.csv"
     
-    print("Loading Large Embeddings...")
-    df_feat = pd.read_csv(DATA_DIR / "train_embeddings_large.csv")
+    print(f"Loading embeddings from: {train_emb_path}")
+    df_feat = pd.read_csv(train_emb_path)
     df_train = pd.read_csv(DATA_DIR / "train.csv")
     
     if "Dry_Green_g" not in df_train.columns:
@@ -79,6 +97,7 @@ def main():
     
     mskf = MultilabelStratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     y_bin = (y > 0).astype(int)
+    fold_splits = list(mskf.split(X, y_bin))
 
     # モデル定義
     models_def = {
@@ -90,7 +109,7 @@ def main():
     # 各モデル学習ループ
     for name, base_model in models_def.items():
         print(f"\n=== Training {name.upper()} (Large) ===")
-        save_dir = MODELS_DIR / name
+        save_dir = models_dir / name
         save_dir.mkdir(exist_ok=True)
         
         # OOF保存用
@@ -99,14 +118,21 @@ def main():
         for c in pred_cols: oof_df[c] = 0.0
         
         # Foldループ
-        for fold, (train_idx, val_idx) in enumerate(mskf.split(X, y_bin)):
+        for fold, (train_idx, val_idx) in enumerate(
+            tqdm(fold_splits, desc=f"{name.upper()} folds", leave=False), start=0
+        ):
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y_norm[train_idx], y_norm[val_idx]
+            print(f"[{name.upper()}] Fold {fold}: train={len(train_idx)} val={len(val_idx)}")
             
             # Scaler
             scaler = StandardScaler()
             X_train_sc = scaler.fit_transform(X_train)
             X_val_sc = scaler.transform(X_val)
+
+            # Convert back to DataFrame so models that track feature names (e.g., LGBM) stay quiet
+            X_train_sc = pd.DataFrame(X_train_sc, columns=feat_cols)
+            X_val_sc = pd.DataFrame(X_val_sc, columns=feat_cols)
             
             # Train
             model = MultiOutputRegressor(base_model)

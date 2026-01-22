@@ -8,9 +8,8 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn
 from torch.utils.data import DataLoader, Dataset
-from torchvision import models, transforms
+from torchvision import transforms
 from PIL import Image
 
 import sys
@@ -19,7 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.models_image import create_model as create_custom_model, is_custom_model
+from path_utils import resolve_data_dir
+from src.model_factory import create_model_from_name
 
 class ImageOnlyDataset(Dataset):
     def __init__(self, df: pd.DataFrame, root_dir: Path, tfms):
@@ -38,23 +38,9 @@ class ImageOnlyDataset(Dataset):
         return image, row["image_path"]
 
 
-def build_model(model_name: str, num_outputs: int) -> nn.Module:
-    if is_custom_model(model_name):
-        return create_custom_model(model_name, num_outputs=num_outputs)
-    if model_name == "resnet18":
-        model = models.resnet18(weights=None)
-        model.fc = nn.Linear(model.fc.in_features, num_outputs)
-        return model
-    if model_name == "resnet34":
-        model = models.resnet34(weights=None)
-        model.fc = nn.Linear(model.fc.in_features, num_outputs)
-        return model
-    raise ValueError(f"Unsupported model_name: {model_name}")
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=str, default="data/csiro_biomass")
+    parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--model-path", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--output", type=str, default="submission.csv")
@@ -64,14 +50,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    data_dir = Path(args.data_dir)
+    data_dir = resolve_data_dir(args.data_dir, required_files=["test.csv", "sample_submission.csv"])
     test_csv = data_dir / "test.csv"
     sample_csv = data_dir / "sample_submission.csv"
-
-    if not test_csv.exists():
-        raise FileNotFoundError(f"Missing test.csv at {test_csv}")
-    if not sample_csv.exists():
-        raise FileNotFoundError(f"Missing sample_submission.csv at {sample_csv}")
 
     test_df = pd.read_csv(test_csv)
     sample_submission = pd.read_csv(sample_csv)
@@ -93,7 +74,12 @@ def main() -> None:
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(model_name, num_outputs=len(targets)).to(device)
+    model = create_model_from_name(
+        model_name,
+        num_outputs=len(targets),
+        pretrained=False,
+        source=artifact.get("model_source"),
+    ).to(device)
     model.load_state_dict(artifact["model_state"])
     model.eval()
 

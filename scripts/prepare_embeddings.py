@@ -1,6 +1,6 @@
 """
 Extract SigLIP embeddings from images and save as a new CSV/Parquet.
-Usage: python scripts/prepare_embeddings.py --data-dir data/csiro_biomass
+Usage: python scripts/prepare_embeddings.py --data-dir data
 """
 import argparse
 import sys
@@ -18,6 +18,8 @@ from transformers import AutoImageProcessor, AutoModel
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from path_utils import resolve_data_dir
 
 def split_image(image, patch_size=520, overlap=16):
     """Splits an image into patches."""
@@ -107,16 +109,13 @@ def compute_embeddings(df, root_dir, model_name, patch_size=520, batch_size=8):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", type=str, default="data/csiro_biomass")
+    parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--model-name", type=str, default="google/siglip-so400m-patch14-384")
     args = parser.parse_args()
     
-    data_dir = Path(args.data_dir)
+    data_dir = resolve_data_dir(args.data_dir)
     train_csv = data_dir / "train.csv"
     test_csv = data_dir / "test.csv"
-    
-    if not train_csv.exists():
-        raise FileNotFoundError(f"{train_csv} not found.")
 
     # Process Train
     print("Processing Train Data...")
